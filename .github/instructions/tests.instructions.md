@@ -20,7 +20,7 @@ Project context Copilot must assume
 - Python >=3.8, all tests must be deterministic and isolated.
 - No external I/O: use mocks, fixtures, or in-memory databases for database tests.
 - Synthetic data: prefer np.random with fixed seeds (seed=42) for reproducibility.
-- Type hints and docstrings required for all test functions and fixtures.
+- Docstrings are used to explain tests and fixtures; type hints are optional (use when clarity benefits).
 
 Hard constraints
 - No network calls, file I/O to real paths, or time-based tests without mocking.

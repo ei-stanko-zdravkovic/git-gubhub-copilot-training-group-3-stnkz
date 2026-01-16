@@ -1,7 +1,6 @@
 ---
 applyTo: "airline-discount-ml/src/models/**/*.py,src/models/**/*.py"
 ---
-
 # Copilot Instructions for src/models
 
 Purpose
