@@ -2,6 +2,16 @@
 applyTo: "airline-discount-ml/tests/**/*.py,tests/**/*.py"
 ---
 
+# Quick Test Rules — Airline Discount ML
+- Use pytest with deterministic fixtures (seed `np.random.seed(42)` and `random.seed(42)` when applicable).
+- Keep tests isolated and fast; no real I/O (use in-memory SQLite or temp files).
+- Mirror `src/` structure: `tests/models/` ↔ `src/models/`, `tests/data/` ↔ `src/data/`, `tests/agents/` ↔ `src/agents/`.
+- Validate strict behaviors: input schema checks, index preservation, `predict()` raises before `fit()`, Series name `discount_value`.
+- Prefer fixtures + parametrization; docstrings explain intent; type hints optional where helpful.
+- Assertions: use `pytest.raises(..., match=...)`, `pd.testing.assert_*` for DataFrames/Series.
+- No imports from `src.data.database` in model tests beyond module-level import; models tested with DataFrames (no DB).
+- Commands: run `pytest -v` or `make test`; coverage `make test-cov`; format/lint with `make format`/`make lint`.
+
 # Copilot Instructions for tests/
 
 Purpose
