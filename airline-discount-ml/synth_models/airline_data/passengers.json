@@ -2,11 +2,7 @@
   "type": "array",
   "length": {
     "type": "number",
-    "range": {
-        "low": 1,
-        "high": 10,
-        "step": 1
-      }
+    "constant": 1000
   },
   "content": {
     "type": "object",

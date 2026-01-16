@@ -1,8 +1,8 @@
 from pathlib import Path
 import pandas as pd
 
-from models.discount_predictor import DiscountPredictor
-from data.database import get_connection
+from src.models.discount_predictor import DiscountPredictor
+from src.data.database import get_connection
 
 
 def train_model(model, data):

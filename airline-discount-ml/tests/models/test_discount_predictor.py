@@ -159,3 +159,49 @@ def test_predict_preserves_index():
     preds = model.predict(X)
     
     assert list(preds.index) == ["row_a", "row_b"]
+
+
+def test_validate_y_valid_series():
+    """Test _validate_y accepts valid non-empty Series."""
+    y = pd.Series([10.0, 15.0, 20.0], name="discount_value")
+    
+    # Should not raise
+    DiscountPredictor._validate_y(y)
+
+
+def test_validate_y_rejects_list():
+    """Test _validate_y raises ValueError for list input."""
+    y = [10.0, 15.0, 20.0]
+    
+    with pytest.raises(ValueError, match="must be a pandas Series"):
+        DiscountPredictor._validate_y(y)
+
+
+def test_validate_y_rejects_dict():
+    """Test _validate_y raises ValueError for dict input."""
+    y = {0: 10.0, 1: 15.0, 2: 20.0}
+    
+    with pytest.raises(ValueError, match="must be a pandas Series"):
+        DiscountPredictor._validate_y(y)
+
+
+def test_validate_y_rejects_dataframe():
+    """Test _validate_y raises ValueError for DataFrame input."""
+    y = pd.DataFrame({"discount_value": [10.0, 15.0, 20.0]})
+    
+    with pytest.raises(ValueError, match="must be a pandas Series"):
+        DiscountPredictor._validate_y(y)
+
+
+def test_validate_y_rejects_none():
+    """Test _validate_y raises ValueError for None input."""
+    with pytest.raises(ValueError, match="must be a pandas Series"):
+        DiscountPredictor._validate_y(None)
+
+
+def test_validate_y_rejects_empty_series():
+    """Test _validate_y raises ValueError for empty Series."""
+    y = pd.Series([], dtype=float, name="discount_value")
+    
+    with pytest.raises(ValueError, match="empty"):
+        DiscountPredictor._validate_y(y)

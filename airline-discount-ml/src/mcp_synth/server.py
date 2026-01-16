@@ -177,6 +177,317 @@ def preview_table_head(req: PreviewHeadRequest) -> PreviewHeadResponse:
 
     return PreviewHeadResponse(path=str(resolved), rows=rows)
 
+class SynthStatsRequest(BaseModel):
+    """Request to compute statistics on a data file."""
+    path: str = Field(
+        default="data/synthetic_output/generated_data.json",
+        description="Path to JSON/NDJSON/CSV file"
+    )
+    log_file: str = Field(default="", description="Optional path to save stats output")
+
+class SynthStatsResponse(BaseModel):
+    """Response with data statistics."""
+    path: str
+    total_records: int
+    collections: Dict[str, Any] = Field(default_factory=dict, description="Statistics per collection")
+
+def synth_stats(req: SynthStatsRequest) -> SynthStatsResponse:
+    """Compute statistics on generated data file."""
+    p = Path(req.path)
+    
+    # Security: prevent directory traversal and restrict to safe paths
+    try:
+        resolved = p.resolve()
+        allowed_prefixes = [
+            Path("data").resolve(),
+            Path("synth_models").resolve(),
+        ]
+        if not any(str(resolved).startswith(str(prefix)) for prefix in allowed_prefixes):
+            raise HTTPException(
+                status_code=403, 
+                detail=f"Access denied: path must be under data/ or synth_models/"
+            )
+    except (OSError, RuntimeError) as e:
+        raise HTTPException(status_code=400, detail=f"Invalid path: {e}") from e
+    
+    if not resolved.exists() or not resolved.is_file():
+        raise HTTPException(status_code=404, detail=f"File not found: {resolved}")
+    
+    try:
+        text = resolved.read_text(encoding="utf-8")
+        data = json.loads(text.strip())
+        
+        collections_stats = {}
+        total_records = 0
+        
+        if isinstance(data, dict):
+            # Multi-collection format
+            for collection_name, records in data.items():
+                if isinstance(records, list):
+                    count = len(records)
+                    total_records += count
+                    
+                    field_stats = {}
+                    if records:
+                        all_keys = set()
+                        for record in records:
+                            if isinstance(record, dict):
+                                all_keys.update(record.keys())
+                        
+                        for key in all_keys:
+                            values = [r.get(key) for r in records if isinstance(r, dict) and key in r]
+                            non_null_values = [v for v in values if v is not None]
+                            
+                            field_stat = {
+                                "count": len(non_null_values),
+                                "null_count": len(values) - len(non_null_values),
+                                "types": list(set(type(v).__name__ for v in non_null_values)),
+                            }
+                            
+                            # Numeric statistics
+                            numeric_values = [v for v in non_null_values if isinstance(v, (int, float))]
+                            if numeric_values:
+                                field_stat["min"] = min(numeric_values)
+                                field_stat["max"] = max(numeric_values)
+                                field_stat["mean"] = sum(numeric_values) / len(numeric_values)
+                            
+                            # String statistics
+                            string_values = [v for v in non_null_values if isinstance(v, str)]
+                            if string_values:
+                                field_stat["unique_count"] = len(set(string_values))
+                                field_stat["sample_values"] = list(set(string_values))[:5]
+                            
+                            field_stats[key] = field_stat
+                    
+                    collections_stats[collection_name] = {
+                        "count": count,
+                        "fields": field_stats
+                    }
+        
+        return SynthStatsResponse(
+            path=str(resolved),
+            total_records=total_records,
+            collections=collections_stats
+        )
+        
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Failed to compute stats: {e}") from e
+
+class ImportSchemaRequest(BaseModel):
+    """Request to import database schema into Synth."""
+    db_path: str = Field(default="data/airline_discount.db", description="Path to SQLite database")
+    output_dir: str = Field(default="synth_models/imported", description="Output directory for Synth schemas")
+    log_file: str = Field(default="", description="Optional path to save import log")
+
+class ImportSchemaResponse(BaseModel):
+    """Response from schema import."""
+    success: bool
+    message: str
+    schema_files: List[str]
+
+def synth_import_schema(req: ImportSchemaRequest) -> ImportSchemaResponse:
+    """Import database schema into Synth format."""
+    db_path = Path(req.db_path)
+    
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail=f"Database not found: {db_path}")
+    
+    try:
+        # Create output directory
+        output_path = Path(req.output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        
+        # Run synth import command
+        cmd = ["synth", "import", str(db_path), "--to", str(output_path)]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        
+        # List generated schema files
+        schema_files = [str(f.relative_to(output_path)) for f in output_path.glob("*.json")]
+        
+        return ImportSchemaResponse(
+            success=True,
+            message=f"Imported schema from {db_path} to {output_path}",
+            schema_files=schema_files
+        )
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"Synth import failed: {e.stderr}") from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Import failed: {e}") from e
+
+class ValidateFKRequest(BaseModel):
+    """Request to validate foreign key constraints."""
+    path: str = Field(
+        default="data/synthetic_output/generated_data.json",
+        description="Path to generated data file"
+    )
+    log_file: str = Field(default="", description="Optional path to save validation log")
+
+class ValidateFKResponse(BaseModel):
+    """Response from FK validation."""
+    valid: bool
+    message: str
+    violations: List[Dict[str, Any]] = Field(default_factory=list)
+
+def validate_fk(req: ValidateFKRequest) -> ValidateFKResponse:
+    """Validate foreign key constraints in generated data."""
+    p = Path(req.path)
+    
+    # Security check
+    try:
+        resolved = p.resolve()
+        allowed_prefixes = [Path("data").resolve(), Path("synth_models").resolve()]
+        if not any(str(resolved).startswith(str(prefix)) for prefix in allowed_prefixes):
+            raise HTTPException(status_code=403, detail="Access denied")
+    except (OSError, RuntimeError) as e:
+        raise HTTPException(status_code=400, detail=f"Invalid path: {e}") from e
+    
+    if not resolved.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {resolved}")
+    
+    try:
+        with open(resolved) as f:
+            data = json.load(f)
+        
+        violations = []
+        
+        # Check if data has expected collections
+        if not isinstance(data, dict):
+            raise HTTPException(status_code=400, detail="Expected multi-collection JSON object")
+        
+        # Extract IDs from each collection
+        passenger_ids = set()
+        route_ids = set()
+        
+        if "passengers" in data:
+            passenger_ids = {p.get("id") for p in data["passengers"] if isinstance(p, dict)}
+        if "routes" in data:
+            route_ids = {r.get("id") for r in data["routes"] if isinstance(r, dict)}
+        
+        # Validate discounts reference valid passengers and routes
+        if "discounts" in data:
+            for i, discount in enumerate(data["discounts"]):
+                if not isinstance(discount, dict):
+                    continue
+                
+                passenger_id = discount.get("passenger_id")
+                route_id = discount.get("route_id")
+                
+                if passenger_id and passenger_id not in passenger_ids:
+                    violations.append({
+                        "collection": "discounts",
+                        "index": i,
+                        "field": "passenger_id",
+                        "value": passenger_id,
+                        "message": f"passenger_id {passenger_id} not found in passengers"
+                    })
+                
+                if route_id and route_id not in route_ids:
+                    violations.append({
+                        "collection": "discounts",
+                        "index": i,
+                        "field": "route_id",
+                        "value": route_id,
+                        "message": f"route_id {route_id} not found in routes"
+                    })
+        
+        return ValidateFKResponse(
+            valid=len(violations) == 0,
+            message=f"Found {len(violations)} FK violations" if violations else "All FK constraints valid",
+            violations=violations
+        )
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Validation failed: {e}") from e
+
+class DryRunRequest(BaseModel):
+    """Request to preview data generation without creating files."""
+    model_dir: str = Field(default="synth_models/airline_data", description="Path to Synth schemas")
+    size: int = Field(default=5, ge=1, le=100, description="Preview sample size (max 100)")
+    seed: int = Field(default=42, description="Random seed")
+    log_file: str = Field(default="", description="Optional path to save preview")
+
+class DryRunResponse(BaseModel):
+    """Response from dry run."""
+    success: bool
+    message: str
+    preview: Dict[str, Any] = Field(default_factory=dict)
+
+def synth_dry_run(req: DryRunRequest) -> DryRunResponse:
+    """Preview data generation without creating files."""
+    try:
+        cmd = ["synth", "generate", req.model_dir, "--size", str(req.size), "--seed", str(req.seed)]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        
+        preview_data = json.loads(result.stdout)
+        
+        return DryRunResponse(
+            success=True,
+            message=f"Preview generated {req.size} records per collection (not saved)",
+            preview=preview_data
+        )
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"Synth command failed: {e.stderr}") from e
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON output: {e}") from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Dry run failed: {e}") from e
+
+class PolicyCheckRequest(BaseModel):
+    """Request to check generation against organizational policies."""
+    size: int = Field(description="Requested generation size")
+    model_dir: str = Field(default="synth_models/airline_data", description="Model directory")
+    max_size: int = Field(default=10000, description="Maximum allowed size")
+    log_file: str = Field(default="", description="Optional path to save policy check log")
+
+class PolicyCheckResponse(BaseModel):
+    """Response from policy check."""
+    allowed: bool
+    message: str
+    warnings: List[str] = Field(default_factory=list)
+
+def policy_check(req: PolicyCheckRequest) -> PolicyCheckResponse:
+    """Enforce organizational limits on data generation."""
+    warnings = []
+    
+    # Check size limit
+    if req.size > req.max_size:
+        return PolicyCheckResponse(
+            allowed=False,
+            message=f"Request size {req.size} exceeds maximum {req.max_size}",
+            warnings=[]
+        )
+    
+    # Warn if size is large
+    if req.size > req.max_size * 0.8:
+        warnings.append(f"Large generation request: {req.size} records (80%+ of maximum)")
+    
+    # Check model directory exists
+    model_path = Path(req.model_dir)
+    if not model_path.exists():
+        return PolicyCheckResponse(
+            allowed=False,
+            message=f"Model directory not found: {req.model_dir}",
+            warnings=warnings
+        )
+    
+    # Check for required schema files
+    schema_files = list(model_path.glob("*.json"))
+    if not schema_files:
+        return PolicyCheckResponse(
+            allowed=False,
+            message=f"No schema files found in {req.model_dir}",
+            warnings=warnings
+        )
+    
+    return PolicyCheckResponse(
+        allowed=True,
+        message=f"Policy check passed for {req.size} records",
+        warnings=warnings
+    )
+
 class ExportArchiveRequest(BaseModel):
     """Request to export output files as a zip archive."""
     source_dir: str = Field(
@@ -340,6 +651,117 @@ PREVIEW_TABLE_HEAD_SCHEMA: Dict[str, Any] = {
     "required": []
 }
 
+SYNTH_STATS_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "path": {
+            "type": "string", 
+            "description": "Path to JSON/NDJSON/CSV file",
+            "default": "data/synthetic_output/generated_data.json"
+        },
+        "log_file": {
+            "type": "string", 
+            "description": "Optional path to save stats output",
+            "default": ""
+        }
+    },
+    "required": []
+}
+
+IMPORT_SCHEMA_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "db_path": {
+            "type": "string",
+            "description": "Path to SQLite database",
+            "default": "data/airline_discount.db"
+        },
+        "output_dir": {
+            "type": "string",
+            "description": "Output directory for Synth schemas",
+            "default": "synth_models/imported"
+        },
+        "log_file": {
+            "type": "string",
+            "description": "Optional path to save import log",
+            "default": ""
+        }
+    },
+    "required": []
+}
+
+VALIDATE_FK_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "path": {
+            "type": "string",
+            "description": "Path to generated data file",
+            "default": "data/synthetic_output/generated_data.json"
+        },
+        "log_file": {
+            "type": "string",
+            "description": "Optional path to save validation log",
+            "default": ""
+        }
+    },
+    "required": []
+}
+
+DRY_RUN_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "model_dir": {
+            "type": "string",
+            "description": "Path to Synth schemas",
+            "default": "synth_models/airline_data"
+        },
+        "size": {
+            "type": "integer",
+            "description": "Preview sample size (max 100)",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 5
+        },
+        "seed": {
+            "type": "integer",
+            "description": "Random seed",
+            "default": 42
+        },
+        "log_file": {
+            "type": "string",
+            "description": "Optional path to save preview",
+            "default": ""
+        }
+    },
+    "required": []
+}
+
+POLICY_CHECK_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "size": {
+            "type": "integer",
+            "description": "Requested generation size"
+        },
+        "model_dir": {
+            "type": "string",
+            "description": "Model directory",
+            "default": "synth_models/airline_data"
+        },
+        "max_size": {
+            "type": "integer",
+            "description": "Maximum allowed size",
+            "default": 10000
+        },
+        "log_file": {
+            "type": "string",
+            "description": "Optional path to save policy check log",
+            "default": ""
+        }
+    },
+    "required": ["size"]
+}
+
 EXPORT_ARCHIVE_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -427,6 +849,31 @@ async def mcp(request: Request):
                     "inputSchema": PREVIEW_TABLE_HEAD_SCHEMA,
                 },
                 {
+                    "name": "synth_stats",
+                    "description": "Compute statistics on a generated data file (counts, types, ranges, distributions)",
+                    "inputSchema": SYNTH_STATS_SCHEMA,
+                },
+                {
+                    "name": "synth_import_schema",
+                    "description": "Import database schema into Synth format",
+                    "inputSchema": IMPORT_SCHEMA_SCHEMA,
+                },
+                {
+                    "name": "validate_fk",
+                    "description": "Validate foreign key constraints in generated data",
+                    "inputSchema": VALIDATE_FK_SCHEMA,
+                },
+                {
+                    "name": "synth_dry_run",
+                    "description": "Preview data generation without creating files",
+                    "inputSchema": DRY_RUN_SCHEMA,
+                },
+                {
+                    "name": "policy_check",
+                    "description": "Check generation request against organizational policies",
+                    "inputSchema": POLICY_CHECK_SCHEMA,
+                },
+                {
                     "name": "export_archive",
                     "description": "Zip output files into a compressed archive",
                     "inputSchema": EXPORT_ARCHIVE_SCHEMA,
@@ -512,6 +959,108 @@ async def mcp(request: Request):
                     {"type": "text", "text": text_output},
                     {"type": "json", "data": data}
                 ]})
+            elif name == "synth_stats":
+                req = SynthStatsRequest(**args)
+                resp = synth_stats(req)
+                data = resp.model_dump()
+                
+                # Format statistics for readability
+                text_parts = [f"📊 Statistics for {data['path']}\n"]
+                text_parts.append(f"📈 Total records: {data['total_records']:,}\n")
+                
+                for collection_name, collection_stats in data['collections'].items():
+                    text_parts.append(f"\n📦 Collection: {collection_name}")
+                    text_parts.append(f"   Records: {collection_stats['count']:,}")
+                    text_parts.append(f"   Fields: {len(collection_stats['fields'])}\n")
+                    
+                    for field_name, field_stat in collection_stats['fields'].items():
+                        text_parts.append(f"   • {field_name}:")
+                        text_parts.append(f"     - Count: {field_stat['count']:,}, Nulls: {field_stat['null_count']}")
+                        text_parts.append(f"     - Types: {', '.join(field_stat['types'])}")
+                        if 'min' in field_stat:
+                            text_parts.append(f"     - Range: [{field_stat['min']}, {field_stat['max']}], Mean: {field_stat['mean']:.2f}")
+                        if 'unique_count' in field_stat:
+                            text_parts.append(f"     - Unique: {field_stat['unique_count']}")
+                            if 'sample_values' in field_stat:
+                                samples = ', '.join(str(v) for v in field_stat['sample_values'][:3])
+                                text_parts.append(f"     - Samples: {samples}")
+                
+                text_output = "\n".join(text_parts)
+                
+                # Save stats output
+                if req.log_file:
+                    log_file = Path(req.log_file)
+                else:
+                    stats_path = Path(req.path)
+                    log_file = stats_path.parent / f"{stats_path.stem}_stats.txt"
+                
+                log_file.parent.mkdir(parents=True, exist_ok=True)
+                with open(log_file, "w", encoding="utf-8") as f:
+                    f.write(text_output)
+                
+                text_output += f"\n\n💾 Stats saved to: {log_file}"
+                return mcp_ok(rpc_id, {"content": [
+                    {"type": "text", "text": text_output},
+                    {"type": "json", "data": data}
+                ]})
+            elif name == "synth_import_schema":
+                req = ImportSchemaRequest(**args)
+                resp = synth_import_schema(req)
+                data = resp.model_dump()
+                text_output = f"📥 {data['message']}\n\n📄 Schema files: {', '.join(data['schema_files'])}"
+                return mcp_ok(rpc_id, {"content": [
+                    {"type": "text", "text": text_output},
+                    {"type": "json", "data": data}
+                ]})
+            elif name == "validate_fk":
+                req = ValidateFKRequest(**args)
+                resp = validate_fk(req)
+                data = resp.model_dump()
+                
+                if data['valid']:
+                    text_output = f"✅ {data['message']}"
+                else:
+                    text_output = f"❌ {data['message']}\n\n"
+                    text_output += f"Violations ({len(data['violations'])}):\n"
+                    for v in data['violations'][:10]:  # Show first 10
+                        text_output += f"  • {v['collection']}[{v['index']}].{v['field']}: {v['message']}\n"
+                    if len(data['violations']) > 10:
+                        text_output += f"  ... and {len(data['violations']) - 10} more"
+                
+                return mcp_ok(rpc_id, {"content": [
+                    {"type": "text", "text": text_output},
+                    {"type": "json", "data": data}
+                ]})
+            elif name == "synth_dry_run":
+                req = DryRunRequest(**args)
+                resp = synth_dry_run(req)
+                data = resp.model_dump()
+                
+                text_output = f"🔍 {data['message']}\n\n"
+                text_output += f"Preview:\n{json.dumps(data['preview'], indent=2)[:500]}..."
+                
+                return mcp_ok(rpc_id, {"content": [
+                    {"type": "text", "text": text_output},
+                    {"type": "json", "data": data}
+                ]})
+            elif name == "policy_check":
+                req = PolicyCheckRequest(**args)
+                resp = policy_check(req)
+                data = resp.model_dump()
+                
+                if data['allowed']:
+                    text_output = f"✅ {data['message']}"
+                    if data['warnings']:
+                        text_output += "\n\n⚠️ Warnings:\n"
+                        for w in data['warnings']:
+                            text_output += f"  • {w}\n"
+                else:
+                    text_output = f"🚫 {data['message']}"
+                
+                return mcp_ok(rpc_id, {"content": [
+                    {"type": "text", "text": text_output},
+                    {"type": "json", "data": data}
+                ]})
             elif name == "export_archive":
                 req = ExportArchiveRequest(**args)
                 resp = export_archive(req)
@@ -558,6 +1107,11 @@ async def mcp(request: Request):
             return mcp_err(rpc_id, he.status_code, he.detail)
         except Exception as e:  # noqa: BLE001
             return mcp_err(rpc_id, -32000, f"Server error: {e}")
+
+    # Handle logging/setLevel method (VS Code MCP client compatibility)
+    if method == "logging/setLevel":
+        # Accept the request but do nothing - we use Python's logging
+        return mcp_ok(rpc_id, {})
 
     # Unknown method
     return mcp_err(rpc_id, -32601, f"Unknown method: {method}")

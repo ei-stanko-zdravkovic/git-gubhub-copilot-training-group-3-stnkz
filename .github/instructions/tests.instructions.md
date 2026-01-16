@@ -12,6 +12,20 @@ applyTo: "airline-discount-ml/tests/**/*.py,tests/**/*.py"
 - No imports from `src.data.database` in model tests beyond module-level import; models tested with DataFrames (no DB).
 - Commands: run `pytest -v` or `make test`; coverage `make test-cov`; format/lint with `make format`/`make lint`.
 
+# CRITICAL: Test File Location Rules
+- **ALL tests MUST be generated in the `/tests` folder** (airline-discount-ml/tests/)
+- **NEVER generate test files outside the tests/ folder** (e.g., no tests in src/, root, or other locations)
+- Test structure MUST mirror src/ structure: `tests/models/` ↔ `src/models/`, `tests/data/` ↔ `src/data/`, etc.
+- Test files MUST follow naming convention: `test_<module_name>.py` or `<module_name>_test.py`
+
+# Test Generation Workflow (ALWAYS FOLLOW)
+1. **BEFORE generating tests**: List all test cases to be implemented with clear descriptions
+2. **Check conftest.py**: Review existing shared fixtures in tests/conftest.py and module-level conftest.py files
+3. **Add shared fixtures**: If new fixtures will be reused across multiple test files, add them to conftest.py
+4. **Avoid code duplication**: Reuse existing fixtures and helper functions from conftest.py
+5. **Generate tests**: Create test file in appropriate tests/ subdirectory with all listed test cases
+6. **Verify**: Ensure tests can import from src/ modules correctly
+
 # Copilot Instructions for tests/
 
 Purpose

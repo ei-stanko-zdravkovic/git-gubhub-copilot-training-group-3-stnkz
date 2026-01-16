@@ -1,6 +1,5 @@
 # GitHub Copilot instructions are included in repo for training
 # Other .github files may be user-specific
-.github/*
 !.github/copilot-instructions.md
 !.github/instructions/
 

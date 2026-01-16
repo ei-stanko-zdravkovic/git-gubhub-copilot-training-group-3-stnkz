@@ -2,7 +2,7 @@
   "type": "array",
   "length": {
     "type": "number",
-    "constant": 3
+    "constant": 1000
   },
   "content": {
     "type": "object",

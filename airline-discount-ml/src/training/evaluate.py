@@ -3,8 +3,8 @@ import pandas as pd
 import numpy as np
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-from models.discount_predictor import DiscountPredictor
-from data.database import get_connection
+from src.models.discount_predictor import DiscountPredictor
+from src.data.database import get_connection
 
 
 def evaluate_model(model, test_data):
